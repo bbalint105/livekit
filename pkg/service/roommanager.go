@@ -2,7 +2,10 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"net/http"
 	"os"
 	"sync"
 	"time"
@@ -664,19 +667,15 @@ func (r *RoomManager) iceServersForRoom(ri *livekit.Room, tlsOnly bool) []*livek
 	if len(rtcConf.TURNServers) > 0 {
 		hasSTUN = true
 		for _, s := range r.config.RTC.TURNServers {
-			scheme := "turn"
-			transport := "tcp"
-			if s.Protocol == "tls" {
-				scheme = "turns"
-			} else if s.Protocol == "udp" {
-				transport = "udp"
-			}
-			is := &livekit.ICEServer{
-				Urls: []string{
-					fmt.Sprintf("%s:%s:%d?transport=%s", scheme, s.Host, s.Port, transport),
-				},
-				Username:   s.Username,
-				Credential: s.Credential,
+			is := &livekit.ICEServer{}
+			if s.AuthURI != "" {
+				err := temporaryAuthForTurn(s, is)
+				if err != nil {
+					logger.Errorw("Temporary auth request failed, falling back to config-read ", err)
+					configAuthRead(s, is)
+				}
+			} else {
+				configAuthRead(s, is)
 			}
 			iceServers = append(iceServers, is)
 		}
@@ -742,4 +741,59 @@ func iceServerForStunServers(servers []string) *livekit.ICEServer {
 		iceServer.Urls = append(iceServer.Urls, fmt.Sprintf("stun:%s", stunServer))
 	}
 	return iceServer
+}
+
+func temporaryAuthForTurn(s config.TURNServer, is *livekit.ICEServer) error {
+	req, err := http.NewRequest("GET", s.AuthURI, nil)
+	if err != nil {
+		logger.Errorw("API request failed ", err)
+	}
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		logger.Errorw("API resolve failed ", err)
+	}
+
+	defer res.Body.Close()
+	body, readErr := ioutil.ReadAll(res.Body)
+	if readErr != nil {
+		logger.Errorw("API response read failed ", readErr)
+	}
+
+	var response struct {
+		Username   string   `json:"username"`
+		Credential string   `json:"credential"`
+		TTL        int      `json:"ttl"`
+		URIs       []string `json:"uris"`
+	}
+
+	json.Unmarshal([]byte(string(body)), &response)
+
+	is = &livekit.ICEServer{
+		Urls:       response.URIs,
+		Username:   response.Username,
+		Credential: response.Credential,
+	}
+
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func configAuthRead(s config.TURNServer, is *livekit.ICEServer) {
+	scheme := "turn"
+	transport := "tcp"
+	if s.Protocol == "tls" {
+		scheme = "turns"
+	} else if s.Protocol == "udp" {
+		transport = "udp"
+	}
+	is = &livekit.ICEServer{
+		Urls: []string{
+			fmt.Sprintf("%s:%s:%d?transport=%s", scheme, s.Host, s.Port, transport),
+		},
+		Username:   s.Username,
+		Credential: s.Credential,
+	}
 }

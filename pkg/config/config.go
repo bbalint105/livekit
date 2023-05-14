@@ -114,6 +114,7 @@ type TURNServer struct {
 	Protocol   string `yaml:"protocol"`
 	Username   string `yaml:"username,omitempty"`
 	Credential string `yaml:"credential,omitempty"`
+	AuthURI    string `yaml:"uri,omitempty"`
 }
 
 type PLIThrottleConfig struct {
